@@ -81,7 +81,7 @@ function initAuth() {
       });
       ok();
     };
-    s.onerror = () => ng(new Error('無法載入 Google 登入元件（網路被擋？）'));
+    s.onerror = () => { Auth.ready = null; s.remove(); ng(new Error('無法載入 Google 登入元件（網路被擋？）')); };
     document.head.appendChild(s);
   });
   return Auth.ready;
@@ -115,6 +115,7 @@ async function api(fn, ...args) {
     if (!tokenValid()) await needLogin(attempt ? '登入已過期，請重新登入' : '');
     const r = await fetch(window.APP_CONFIG.API_URL, {
       method: 'POST', redirect: 'follow',
+      signal: (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(45000) : undefined,   // 伺服器卡住時 45 秒後放棄，交給暫存佇列重試
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },       // 不用 application/json，避免瀏覽器 CORS 預檢
       body: JSON.stringify({ idToken: Auth.token, fn: fn, args: args })
     });
