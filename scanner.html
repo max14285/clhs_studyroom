@@ -18,6 +18,7 @@ body{background:#0f172a;color:#e5e7eb}
 #result .w{font-size:26px;font-weight:700}
 #result .d{font-size:18px;opacity:.9}
 #result.success{background:#14532d}#result.info{background:#1e3a8a}#result.warn{background:#9a3412}#result.error{background:#7f1d1d}
+.qbadge{font-size:16px;font-weight:700;padding:10px 14px;border-radius:12px;text-align:center;background:#92400e;color:#fef3c7;cursor:pointer;margin-bottom:10px}.qbadge.bad{background:#991b1b;color:#fee2e2}
 .recent{font-size:13px;color:#94a3b8;max-height:150px;overflow:auto}
 .recent div{padding:3px 0;border-bottom:1px solid #1f2937}
 .legend{color:#94a3b8}
@@ -35,6 +36,7 @@ select{background:#0b1220;color:#fff;border-color:#334155}
 </div>
 <div class="wrap">
   <div class="panel">
+    <div id="qBadge" class="qbadge hide"></div>
     <div id="ready" class="ready">掃描就緒</div>
     <div class="row" style="margin-top:10px">
       <button class="btn sm" id="camBtn">📷 改用相機掃描</button>
@@ -95,22 +97,111 @@ document.addEventListener('click', () => { window.focus(); updateReady(); });
 setInterval(updateReady, 1000);
 updateReady();
 
-async function submit(code) {
+/* ---- 掃描暫存佇列 ----
+ * 每次掃描先「寫進瀏覽器（localStorage）」再上傳；伺服器確認收到才從佇列移除。
+ * 因此：斷網、Apps Script 忙碌、不小心關掉網頁，掃描紀錄都不會遺失，網頁重開或連線恢復後自動補傳。
+ * 每筆掃描帶有唯一編號（伺服器據此去重，重送不會重複點名）與掃描時間（補傳時以當時的時間記錄報到／離場）。 */
+const QKEY = 'sr_scan_queue', FKEY = 'sr_scan_failed';
+function loadQ(k) { try { const a = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+let Q = loadQ(QKEY), F = loadQ(FKEY), flushing = false, retryT = null, retryN = 0;
+function saveQ() {
+  try { localStorage.setItem(QKEY, JSON.stringify(Q)); localStorage.setItem(FKEY, JSON.stringify(F)); } catch (e) {}
+  updateBadge();
+}
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 10); }
+function isNetErr(e) { return /Failed to fetch|NetworkError|Load failed|network|abort|timed out|Timeout|伺服器回應格式錯誤|無法載入/i.test(String((e && (e.message || e.name)) || e)); }
+const hms = ms => new Date(ms).toLocaleTimeString('zh-TW', { hour12: false });
+
+function updateBadge() {
+  const b = $('#qBadge'); if (!b) return;
+  if (F.length) { b.className = 'qbadge bad'; b.textContent = '⚠ ' + F.length + ' 筆上傳失敗，點此處理'; }
+  else if (Q.length) { b.className = 'qbadge'; b.textContent = '⏳ 待上傳 ' + Q.length + ' 筆（已保存在本機，會自動補傳；點此立即重試）'; }
+  else b.className = 'qbadge hide';
+}
+
+function scheduleRetry() {
+  clearTimeout(retryT);
+  retryN++;
+  retryT = setTimeout(flush, Math.min(30000, 2000 * Math.pow(2, retryN - 1)));    // 2、4、8、16、30 秒…
+}
+
+async function flush() {
+  if (flushing) return;
+  flushing = true; clearTimeout(retryT);
+  try {
+    while (Q.length) {
+      if (typeof navigator.onLine === 'boolean' && !navigator.onLine) { scheduleRetry(); break; }
+      const it = Q[0];
+      let r;
+      try {
+        r = await api('adminScan', it.code, Date.now() - it.ts, it.id);
+      } catch (e) {
+        if (!isNetErr(e)) it.tries = (it.tries || 0) + 1;
+        if ((it.tries || 0) >= 6) {                   // 伺服器反覆回報錯誤 → 移到「失敗」區保留，不擋住後面的掃描
+          Q.shift(); F.push({ id: it.id, code: it.code, ts: it.ts, err: errMsg(e) }); saveQ();
+          show({ level: 'error', title: '有掃描上傳失敗', detail: errMsg(e) }); beep('error');
+          continue;
+        }
+        saveQ(); scheduleRetry();
+        show({ level: 'warn', title: '已暫存 ' + Q.length + ' 筆，稍後自動補傳', detail: '掃描已保存：' + errMsg(e) });
+        break;
+      }
+      if (r && r.retry) {                              // 伺服器忙碌
+        saveQ(); scheduleRetry();
+        show({ level: 'warn', title: '伺服器忙碌，已暫存 ' + Q.length + ' 筆', detail: '掃描已保存，稍後自動補傳' });
+        break;
+      }
+      Q.shift(); retryN = 0; saveQ();
+      present(r, it);
+    }
+  } finally { flushing = false; }
+  if (!Q.length) loadLive();
+}
+
+function present(r, it) {
+  const late = Date.now() - it.ts > 5000;
+  if (late) r = Object.assign({}, r, { detail: (r.detail || '') + '（補傳，掃描於 ' + hms(it.ts) + '）' });
+  show(r); beep(r.level);
+  const li = document.createElement('div');
+  li.textContent = hms(it.ts) + '  ' + (r.who || '') + '  ' + (r.seat ? '座位' + r.seat + '  ' : '') + r.title + (late ? '（補傳）' : '');
+  const rc = $('#recent'); rc.prepend(li); while (rc.children.length > 30) rc.lastChild.remove();
+}
+
+function submit(code) {
   code = String(code || '').trim();
   if (!code) return;
   const t = Date.now();
   if (code === lastCode && t - lastAt < 2500) return;      // 防止相機連續重複掃描
   lastCode = code; lastAt = t;
-  show({ level: 'info', title: '處理中…', detail: '' });
-  let r;
-  try { r = await api('adminScan', code); } catch (e) { r = { level: 'error', title: '系統錯誤', detail: errMsg(e) }; }
-  show(r);
-  beep(r.level);
-  const li = document.createElement('div');
-  li.textContent = new Date().toLocaleTimeString('zh-TW', { hour12: false }) + '  ' + (r.who || '') + '  ' + (r.seat ? '座位' + r.seat + '  ' : '') + r.title;
-  const rc = $('#recent'); rc.prepend(li); while (rc.children.length > 30) rc.lastChild.remove();
-  loadLive();
+  Q.push({ id: uid(), code: code, ts: t, tries: 0 });
+  saveQ();                                                // 先存本機，再上傳
+  if (Q.length === 1) show({ level: 'info', title: '處理中…', detail: '' });
+  flush();
 }
+
+$('#qBadge').onclick = () => {
+  if (F.length) return showFailed();
+  retryN = 0; flush();
+};
+function showFailed() {
+  const rows = F.map(f => hms(f.ts) + '　' + f.code.slice(0, 18) + '…　' + f.err).join('\n');
+  modal({
+    title: '上傳失敗的掃描（' + F.length + ' 筆）',
+    body: '<pre style="white-space:pre-wrap;font-size:12px;max-height:240px;overflow:auto">' + esc(rows) + '</pre><p class="mut">這些掃描仍保存在本機。可重新上傳；若確定不需要（例如 QR 已過期、預約已取消）可清除。</p>',
+    buttons: [
+      { text: '重新上傳', cls: 'pri', onClick: () => { Q = Q.concat(F.map(f => Object.assign({ tries: 0 }, f))); F = []; saveQ(); retryN = 0; flush(); } },
+      { text: '清除這些紀錄', onClick: () => { F = []; saveQ(); } },
+      { text: '關閉' }
+    ]
+  });
+}
+window.addEventListener('online', () => { retryN = 0; flush(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && Q.length) flush(); });
+setInterval(() => { if (Q.length && !flushing) flush(); }, 15000);       // 保險：萬一計時器遺失
+window.addEventListener('beforeunload', e => { if (Q.length) { e.preventDefault(); e.returnValue = ''; } });
+updateBadge();
+if (Q.length) setTimeout(flush, 500);                     // 網頁重開後，自動補傳上次未送出的掃描
+
 
 function show(r) {
   const el = $('#result');
