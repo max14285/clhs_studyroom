@@ -1,0 +1,26 @@
+.sm-wrap{overflow:auto;background:#fff;border:1px solid var(--line);border-radius:12px;position:relative;-webkit-overflow-scrolling:touch}
+.sm-canvas{position:relative;transform-origin:0 0;background:#fcfcfd}
+.sm-canvas.grid{background-image:linear-gradient(#eef0f4 1px,transparent 1px),linear-gradient(90deg,#eef0f4 1px,transparent 1px);background-size:10px 10px}
+.sm-item{position:absolute;display:flex;align-items:center;justify-content:center;text-align:center;user-select:none;-webkit-user-select:none;border-radius:8px;font-size:12px;line-height:1.2;overflow:hidden}
+.sm-in{display:block;pointer-events:none}
+.sm-in small{font-size:10px;opacity:.85;display:block}
+.sm-seat{border:2px solid #86efac;background:#f0fdf4;cursor:pointer}
+.sm-seat.taken{background:#e5e7eb;border-color:#9ca3af;color:#6b7280;cursor:not-allowed}
+.sm-seat.mine{background:#dbeafe;border-color:#2563eb;font-weight:700;cursor:default}
+.sm-seat.off{background:repeating-linear-gradient(45deg,#f3f4f6,#f3f4f6 6px,#e5e7eb 6px,#e5e7eb 12px);border-color:#d1d5db;color:#9ca3af;cursor:not-allowed}
+.sm-seat.s-res{background:#fef9c3;border-color:#eab308}
+.sm-seat.s-in{background:#dcfce7;border-color:#16a34a}
+.sm-seat.s-away{background:#ffedd5;border-color:#f97316}
+.sm-seat.s-out{background:#e5e7eb;border-color:#9ca3af;color:#6b7280}
+.sm-seat.edit{cursor:move;border-color:#60a5fa;background:#eff6ff}
+.sm-seat.edit.off{background:#f3f4f6;border-color:#d1d5db}
+.sm-item.sel{outline:3px solid #2563eb;outline-offset:1px;z-index:5}
+.sm-label{color:#374151;font-weight:700;font-size:15px;background:transparent;border:1px dashed transparent}
+.sm-label.edit{border-color:#cbd5e1;cursor:move}
+.sm-door{background:#fde68a;border:2px dashed #b45309;color:#78350f}
+.sm-block{background:#d1d5db;border:1px solid #9ca3af;color:#374151}
+.sm-door.edit,.sm-block.edit{cursor:move}
+.sm-room{background:transparent;border:3px solid #66736f;border-radius:0;pointer-events:none}
+.sm-room .sm-in{display:none}
+.fl-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 8px}
+.rb{position:absolute;border:1px dashed #2563eb;background:#2563eb22;z-index:9;pointer-events:none}

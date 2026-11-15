@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>點名站</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="seatmap.css">
+<script src="seatmap.js"></script>
+<style>
+body{background:#0f172a;color:#e5e7eb}
+.topbar{background:#111827;border-color:#1f2937}.topbar .acct,.topbar .acct b{color:#cbd5e1}
+.panel{background:#111827;border:1px solid #1f2937;border-radius:16px;padding:14px;margin-bottom:12px}
+.ready{font-size:20px;font-weight:700;padding:14px;border-radius:12px;text-align:center;background:#14532d;color:#bbf7d0}
+.ready.off{background:#7f1d1d;color:#fecaca;cursor:pointer}
+#result{border-radius:16px;padding:22px;text-align:center;background:#1f2937;min-height:170px;display:flex;flex-direction:column;justify-content:center;gap:6px}
+#result .t{font-size:34px;font-weight:800}
+#result .w{font-size:26px;font-weight:700}
+#result .d{font-size:18px;opacity:.9}
+#result.success{background:#14532d}#result.info{background:#1e3a8a}#result.warn{background:#9a3412}#result.error{background:#7f1d1d}
+.recent{font-size:13px;color:#94a3b8;max-height:150px;overflow:auto}
+.recent div{padding:3px 0;border-bottom:1px solid #1f2937}
+.legend{color:#94a3b8}
+.btn{background:#1f2937;color:#e5e7eb;border-color:#334155}.btn:hover{background:#334155}
+select{background:#0b1220;color:#fff;border-color:#334155}
+#reader{max-width:360px;margin:10px auto}
+.cnt span{display:inline-block;margin-right:14px}
+.sm-wrap{border-color:#334155}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">📷 點名站 · <span id="roomName">自習教室</span></div>
+  <div class="acct"><span>操作人員：<b id="acctEmail">未登入</b></span><button class="btn sm" id="switchBtn">切換帳號</button></div>
+</div>
+<div class="wrap">
+  <div class="panel">
+    <div id="ready" class="ready">掃描就緒</div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn sm" id="camBtn">📷 改用相機掃描</button>
+      <select id="camSel" class="hide" title="選擇鏡頭"></select>
+      <span class="mut" id="camMsg"></span>
+    </div>
+    <div id="reader" class="hide"></div>
+  </div>
+
+  <div id="result"><div class="t">等待掃描…</div><div class="d">報到 · 暫離 · 回位 · 離場 都由學生出示的 QR 決定</div></div>
+
+  <div class="panel" style="margin-top:12px">
+    <div class="row" style="margin-bottom:8px">
+      <b>即時座位表</b>
+      <select id="lvSlot"></select>
+      <span class="mut cnt" id="lvCnt"></span>
+    </div>
+    <div id="lvFloors"></div>
+    <div id="lvLegend"></div>
+    <div id="lvMap"></div>
+  </div>
+
+  <div class="panel"><b>最近掃描</b><div class="recent" id="recent"></div></div>
+</div>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+const L = { layout: null, slotId: '', busy: false };
+let lastCode = '', lastAt = 0;
+
+/* ---- 掃描槍（鍵盤模式）：整頁監聽按鍵，不需要輸入欄、不需對準游標 ----
+ * 掃描槍會很快地「打」出 QR 內容再按 Enter；這裡把連續按鍵收集起來，Enter 時送出。
+ * 兩次按鍵間隔超過 400ms 視為手動亂按，緩衝清空。 */
+let buf = '', lastKey = 0;
+document.addEventListener('keydown', e => {
+  if (document.querySelector('.ov') || e.ctrlKey || e.metaKey || e.altKey) return;
+  const now = Date.now();
+  if (now - lastKey > 400) buf = '';
+  lastKey = now;
+  if (e.key === 'Enter') {
+    if (buf.length >= 8) { e.preventDefault(); const v = buf; buf = ''; submit(v); } else buf = '';
+    return;
+  }
+  if (e.key.length === 1) { if (buf.length < 300) buf += e.key; e.preventDefault(); }
+}, true);
+
+// 焦點提示：視窗沒取得焦點時，按鍵不會送進來
+function updateReady() {
+  const ok = document.hasFocus();
+  const el = $('#ready');
+  el.className = 'ready' + (ok ? '' : ' off');
+  el.textContent = ok ? '✅ 掃描就緒：直接用掃描機掃描即可' : '⚠ 此畫面尚未取得焦點：請在畫面上任意位置點一下';
+}
+window.addEventListener('focus', updateReady);
+window.addEventListener('blur', updateReady);
+document.addEventListener('click', () => { window.focus(); updateReady(); });
+setInterval(updateReady, 1000);
+updateReady();
+
+async function submit(code) {
+  code = String(code || '').trim();
+  if (!code) return;
+  const t = Date.now();
+  if (code === lastCode && t - lastAt < 2500) return;      // 防止相機連續重複掃描
+  lastCode = code; lastAt = t;
+  show({ level: 'info', title: '處理中…', detail: '' });
+  let r;
+  try { r = await api('adminScan', code); } catch (e) { r = { level: 'error', title: '系統錯誤', detail: errMsg(e) }; }
+  show(r);
+  beep(r.level);
+  const li = document.createElement('div');
+  li.textContent = new Date().toLocaleTimeString('zh-TW', { hour12: false }) + '  ' + (r.who || '') + '  ' + (r.seat ? '座位' + r.seat + '  ' : '') + r.title;
+  const rc = $('#recent'); rc.prepend(li); while (rc.children.length > 30) rc.lastChild.remove();
+  loadLive();
+}
+
+function show(r) {
+  const el = $('#result');
+  el.className = r.level || (r.ok ? 'success' : 'error');
+  el.id = 'result';
+  el.innerHTML = '<div class="t">' + esc(r.title) + '</div>' +
+    (r.who ? '<div class="w">' + esc(r.who) + (r.seat ? ' · 座位 ' + esc(r.seat) : '') + '</div>' : '') +
+    '<div class="d">' + esc(r.detail || '') + (r.slot ? '　[' + esc(r.slot) + ']' : '') + '</div>';
+}
+
+let actx = null;
+function beep(level) {
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const seq = level === 'success' ? [[880, .12]] : level === 'warn' ? [[660, .15], [660, .15]] : level === 'info' ? [[520, .15]] : [[220, .35]];
+    let t = actx.currentTime;
+    seq.forEach(([f, d]) => { const o = actx.createOscillator(), g = actx.createGain(); o.frequency.value = f; o.connect(g); g.connect(actx.destination); g.gain.setValueAtTime(.15, t); o.start(t); o.stop(t + d); t += d + .06; });
+  } catch (e) {}
+}
+
+/* ---- 相機掃描（備用）：可選擇鏡頭（平板前鏡頭、電腦外接攝影機），並記住上次的選擇 ----
+ * 需要 HTTPS（GitHub Pages 可）且瀏覽器允許此網站使用相機；Apps Script 內嵌版無法取得相機權限。 */
+let cam = null;
+const CAM_KEY = 'sr_cam';
+const camBox = () => $('#reader');
+
+async function stopCam() {
+  if (cam) { try { await cam.stop(); } catch (e) {} try { cam.clear(); } catch (e) {} cam = null; }
+}
+function camOff() {
+  stopCam(); camBox().classList.add('hide'); camBox().innerHTML = '';
+  $('#camSel').classList.add('hide'); $('#camBtn').textContent = '📷 改用相機掃描';
+}
+function camError(e) {
+  const n = (e && e.name) || '', m = String((e && e.message) || e || '');
+  if (n === 'NotAllowedError' || /permission|denied/i.test(m)) return '相機權限被拒絕。請點網址列左邊的鎖頭／相機圖示 → 允許「相機」→ 重新整理頁面。';
+  if (n === 'NotFoundError' || /no camera|not found/i.test(m)) return '找不到相機，請確認攝影機已接上。';
+  if (n === 'NotReadableError' || /in use|could not start/i.test(m)) return '相機被其他程式占用（例如視訊會議軟體），請先關閉。';
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost') return '相機只能在 HTTPS 網頁使用。';
+  return m;
+}
+async function startCam(id) {
+  await stopCam();
+  camBox().classList.remove('hide');
+  cam = new Html5Qrcode('reader');
+  await cam.start(id, { fps: 10, qrbox: 240 }, txt => submit(txt), () => {});
+  try { localStorage.setItem(CAM_KEY, id); } catch (e) {}
+}
+$('#camBtn').onclick = async () => {
+  if (cam || !$('#camSel').classList.contains('hide')) return camOff();
+  $('#camMsg').textContent = '正在要求相機權限…';
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('此瀏覽器不支援相機（請用 Chrome／Edge／Safari，並使用 HTTPS 網址）');
+    if (!window.Html5Qrcode) await new Promise((ok, ng) => { const s = document.createElement('script'); s.src = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js'; s.onload = ok; s.onerror = () => ng(new Error('無法載入相機掃描元件')); document.head.appendChild(s); });
+    // 先取得權限（沒授權前，瀏覽器不會提供鏡頭名稱）
+    const st = await navigator.mediaDevices.getUserMedia({ video: true });
+    st.getTracks().forEach(t => t.stop());
+    const cams = await Html5Qrcode.getCameras();
+    if (!cams.length) throw new Error('找不到相機');
+    const sel = $('#camSel');
+    sel.innerHTML = cams.map((c, i) => '<option value="' + esc(c.id) + '">' + esc(c.label || ('鏡頭 ' + (i + 1))) + '</option>').join('');
+    let pick = ''; try { pick = localStorage.getItem(CAM_KEY) || ''; } catch (e) {}
+    if (!cams.some(c => c.id === pick)) {
+      const front = cams.find(c => /front|user|facetime|前/i.test(c.label || ''));
+      pick = (front || cams[0]).id;
+    }
+    sel.value = pick; sel.classList.remove('hide');
+    await startCam(pick);
+    $('#camBtn').textContent = '⏹ 關閉相機'; $('#camMsg').textContent = '';
+  } catch (e) {
+    camOff();
+    $('#camMsg').textContent = '無法啟用相機：' + camError(e);
+  }
+};
+$('#camSel').onchange = async e => {
+  try { await startCam(e.target.value); $('#camMsg').textContent = ''; }
+  catch (err) { $('#camMsg').textContent = '無法切換鏡頭：' + camError(err); }
+};
+
+/* ---- 即時座位表 ---- */
+async function loadLive() {
+  try {
+    const r = await api('adminGetLive', '', L.slotId, !L.layout);
+    if (r.layout) L.layout = r.layout;
+    L.slotId = r.slotId || '';
+    const sel = $('#lvSlot');
+    if (sel.options.length !== r.slots.length) sel.innerHTML = r.slots.map(s => '<option value="' + esc(s.id) + '">' + esc(s.name) + ' ' + esc(s.start) + '–' + esc(s.end) + '</option>').join('');
+    sel.value = L.slotId;
+    const c = r.counts || {};
+    $('#lvCnt').innerHTML = r.note ? esc(r.note) : '<span>預約 ' + (c['預約'] || 0) + '</span><span>在位 ' + (c['在位'] || 0) + '</span><span>暫離 ' + (c['暫離'] || 0) + '</span><span>離場 ' + (c['離場'] || 0) + '</span>';
+    L.occ = r.occ;
+    drawLive();
+  } catch (e) { $('#lvCnt').textContent = errMsg(e); }
+}
+function drawLive() {
+  if (!L.layout) return;
+  const fls = SeatMap.floorsOf(L.layout);
+  if (!L.floor || !fls.includes(L.floor)) L.floor = fls[0];
+  SeatMap.floorTabs($('#lvFloors'), L.layout, L.floor, f => { L.floor = f; drawLive(); });
+  $('#lvLegend').innerHTML = SeatMap.legend('live');
+  SeatMap.render($('#lvMap'), L.layout, { mode: 'live', floor: L.floor, occ: L.occ });
+}
+$('#lvSlot').onchange = e => { L.slotId = e.target.value; e.target.blur(); loadLive(); };
+$('#switchBtn').onclick = signOut;
+(async function boot() {
+  try {
+    await initAuth();
+    const b = await api('adminBootstrap');          // 需要「可巡堂」或「最高管理者」權限
+    $('#roomName').textContent = b.room; document.title = '點名站 · ' + b.room;
+  } catch (e) { show({ level: 'error', title: '無法使用點名站', detail: errMsg(e) }); return; }
+  loadLive();
+  setInterval(() => { if (!document.hidden && !document.querySelector('.ov')) loadLive(); }, 12000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>點名 QR Code</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+.res-h{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.res-a{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.qrbox{display:flex;justify-content:center;padding:12px;background:#fff}
+.bar{height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;background:var(--pri);width:100%}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">📲 點名 QR Code</div>
+  <div class="acct"><span>登入帳號：<b id="acctEmail">未登入</b></span><button class="btn sm" id="switchBtn">不是我？切換帳號</button></div>
+</div>
+<div class="wrap">
+  <div id="fatal" class="banner bad hide"></div>
+  <div id="suspBanner" class="banner bad hide"></div>
+  <div class="row" style="margin-bottom:10px">
+    <b id="who"></b><span class="grow"></span>
+    <button class="btn sm" id="reload">重新整理</button>
+  </div>
+  <div class="mut" style="margin-bottom:8px">QR Code 只能在預約時段前後 <span id="qrw">60</span> 分鐘內產生；請出示給點名站掃描，勿截圖轉傳。</div>
+  <div id="list"><div class="spin">載入中…</div></div>
+</div>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+$('#switchBtn').onclick = signOut;
+$('#reload').onclick = load;
+
+(async function init() {
+  try {
+    await initAuth();
+    const b = await api('studentBootstrap');
+    if (b.error) { $('#fatal').classList.remove('hide'); $('#fatal').textContent = b.error; $('#list').innerHTML = ''; return; }
+    $('#who').textContent = b.me.staff ? '教職員　' + b.me.no + ' ' + b.me.name : b.me.cls + ' 班 ' + b.me.no + ' 號　' + b.me.name;
+    $('#qrw').textContent = b.qrWindow;
+    if (b.suspendedUntil) { const s = $('#suspBanner'); s.classList.remove('hide'); s.textContent = '⛔ 預約功能暫停至 ' + b.suspendedUntil + '；期間請於當天開放入場後，到現場由管理人員報到。'; }
+    load();
+    setInterval(() => { if (!document.hidden && !$('.ov')) load(true); }, 60000);
+  } catch (e) { $('#fatal').classList.remove('hide'); $('#fatal').textContent = errMsg(e); $('#list').innerHTML = ''; }
+})();
+
+async function load(silent) {
+  const box = $('#list');
+  if (silent !== true) box.innerHTML = '<div class="spin">載入中…</div>';
+  try {
+    const r = await api('studentMyReservations');
+    const list = r.list.filter(x => x.date === r.today && x.status !== '取消');
+    if (!list.length) { box.innerHTML = '<div class="card mut">今天沒有預約。（預約請到學校的預約系統頁面）</div>'; return; }
+    box.innerHTML = '';
+    list.forEach(x => {
+      const c = document.createElement('div'); c.className = 'card';
+      c.innerHTML = '<div class="res-h"><b>' + esc(x.slotName) + ' ' + esc(x.start) + '–' + esc(x.end) + '</b><span class="badge ' + esc(x.status) + '">' + esc(x.status) + '</span></div>' +
+        '<div>座位 <b>' + esc(x.seat) + '</b> <span class="mut">· ' + esc(x.source) + '</span></div><div class="res-a"></div>';
+      const a = $('.res-a', c);
+      if (x.qr) {
+        [['I', '📲 報到 / 回位 QR', 'pri'], ['T', '🚶 暫離 QR', ''], ['L', '👋 離場 QR', '']].forEach(([t, txt, cls]) => {
+          const b = document.createElement('button'); b.className = 'btn ' + cls; b.textContent = txt;
+          b.onclick = () => openQr(x, t, txt); a.appendChild(b);
+        });
+      } else {
+        a.innerHTML = '<span class="mut">目前不在可點名時間（預約時段前後 ' + $('#qrw').textContent + ' 分鐘內才能產生 QR）</span>';
+      }
+      box.appendChild(c);
+    });
+  } catch (e) { box.innerHTML = '<div class="card mut">' + esc(errMsg(e)) + '</div>'; }
+}
+
+function openQr(x, type, title) {
+  let timer = null, closed = false;
+  const body = document.createElement('div');
+  body.innerHTML = '<div id="qrInfo" class="mut" style="text-align:center;margin-bottom:6px"></div><div class="qrbox" id="qrbox"><span class="mut">產生中…</span></div><div class="bar"><i id="qrbar"></i></div><div class="mut" style="text-align:center;margin-top:8px">QR 會自動更新，請直接出示螢幕給掃描機（請調高亮度）</div>';
+  modal({ title: title, body: body, onClose: () => { closed = true; clearInterval(timer); load(true); }, buttons: [{ text: '關閉' }] });
+  async function refresh() {
+    try {
+      const r = await api('studentQr', x.resId, type);
+      if (closed) return;
+      const box = $('#qrbox', body);
+      if (!r.ok) { box.innerHTML = '<div style="padding:16px;text-align:center">' + esc(r.message) + '</div>'; clearInterval(timer); $('#qrbar', body).style.width = '0'; return; }
+      $('#qrInfo', body).textContent = r.who + ' · 座位 ' + r.seat + ' · 目前：' + r.status;
+      box.innerHTML = '';
+      new QRCode(box, { text: r.token, width: 250, height: 250, correctLevel: QRCode.CorrectLevel.M });
+      const ttl = r.ttl * 1000, bar = $('#qrbar', body);
+      bar.style.transition = 'none'; bar.style.width = '100%';
+      requestAnimationFrame(() => { bar.style.transition = 'width ' + (ttl * 0.45 / 1000) + 's linear'; bar.style.width = '0%'; });
+      clearInterval(timer);
+      timer = setInterval(refresh, ttl * 0.45);     // 在過期前自動換新 QR
+    } catch (e) { if (!closed) $('#qrbox', body).innerHTML = '<div style="padding:16px">' + esc(errMsg(e)) + '</div>'; }
+  }
+  refresh();
+}
+</script>
+</body>
+</html>
