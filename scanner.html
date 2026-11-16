@@ -26,7 +26,20 @@ body{background:#0f172a;color:#e5e7eb}
 select{background:#0b1220;color:#fff;border-color:#334155}
 #reader{max-width:360px;margin:10px auto}
 .cnt span{display:inline-block;margin-right:14px}
-.sm-wrap{border-color:#1f2937}
+.sm-wrap{border-color:#334155}
+/* 即時座位表：沿用學生頁的淺色配色，文字改深色以利閱讀 */
+.livepanel{background:#fff;border-color:#e5e7eb;color:#1f2937}
+.livepanel b{color:#1f2937}
+.livepanel .legend{color:#4b5563;font-size:14px}
+.livepanel .cnt{color:#374151;font-size:15px;font-weight:600}
+.livepanel select{background:#fff;color:#1f2937;border-color:#cbd5e1}
+.livepanel .chip:not(.on){background:#fff;color:#1f2937;border-color:#cbd5e1}
+.livepanel .sm-wrap{border-color:#e5e7eb;color:#1f2937}
+.livepanel .sm-seat{color:#1f2937}
+.livepanel .sm-seat.s-out{color:#4b5563}
+.livepanel .sm-item{font-size:14px}
+.livepanel .sm-in b{font-size:15px}
+.livepanel .sm-in small{font-size:12px;opacity:1;font-weight:600}
 </style>
 </head>
 <body>
@@ -48,7 +61,7 @@ select{background:#0b1220;color:#fff;border-color:#334155}
 
   <div id="result"><div class="t">等待掃描…</div><div class="d">報到 · 暫離 · 回位 · 離場 都由學生出示的 QR 決定</div></div>
 
-  <div class="panel" style="margin-top:12px">
+  <div class="panel livepanel" style="margin-top:12px">
     <div class="row" style="margin-bottom:8px">
       <b>即時座位表</b>
       <select id="lvSlot"></select>
