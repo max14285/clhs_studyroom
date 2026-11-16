@@ -1,6 +1,18 @@
 <!DOCTYPE html>
 <html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>自習教室</title><link rel="stylesheet" href="style.css"></head>
 <body><div class="wrap" style="max-width:480px;padding-top:40px">
-<div class="card"><h3>📲 點名 QR Code（學生）</h3><p class="mut">報到／暫離／回位／離場</p><a class="btn pri" href="qr.html">開啟</a></div>
-<div class="card"><h3>📷 掃碼點名站（老師）</h3><p class="mut">需「可巡堂」權限。建議用掃描槍，相機為備援。</p><a class="btn" href="scanner.html">開啟</a></div>
-</div></body></html>
+<div class="card"><h3>📷 掃碼點名站（老師）</h3><p class="mut">需「可巡堂」權限。建議用掃描槍，相機為備援。</p><a class="btn pri" href="scanner.html">開啟</a></div>
+<div class="card" id="adminCard" style="display:none"><h3>🛠 管理後台（老師）</h3><p class="mut">每日預約、即時座位表、違規與停權、設定。需管理者權限。</p><a class="btn" id="adminLink" href="#" target="_blank" rel="noopener">開啟</a></div>
+<div class="card"><h3>📲 點名 QR Code（學生）</h3><p class="mut">報到／暫離／回位／離場</p><a class="btn" href="qr.html">開啟</a></div>
+</div>
+<script src="config.js"></script>
+<script>
+// 管理後台網址在 config.js 的 ADMIN_URL 設定；沒填就不顯示這張卡片
+(function () {
+  var u = (window.APP_CONFIG && window.APP_CONFIG.ADMIN_URL) || '';
+  if (!u || /XXXX/.test(u)) return;
+  document.getElementById('adminLink').href = u;
+  document.getElementById('adminCard').style.display = '';
+})();
+</script>
+</body></html>
