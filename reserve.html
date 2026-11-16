@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>自習教室預約</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="seatmap.css">
+<script src="seatmap.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+.res-h{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.res-a{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.qrbox{display:flex;justify-content:center;padding:12px;background:#fff}
+.bar{height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;background:var(--pri);width:100%}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">📚 <span id="room">自習教室</span></div>
+  <div class="acct"><span>目前登入帳號：<b id="acctEmail">未登入</b></span><button class="btn sm" id="switchBtn">不是我？切換帳號</button></div>
+</div>
+
+<div class="wrap">
+  <div id="fatal" class="banner bad hide"></div>
+  <div id="main" class="hide">
+    <div id="who" class="mut" style="margin-bottom:6px"></div>
+    <div id="suspBanner" class="banner bad hide"></div>
+    <div id="openBanner" class="banner info hide"></div>
+
+    <div class="tabs">
+      <button class="tab on" data-t="book">預約座位</button>
+      <button class="tab" data-t="mine">我的預約 / QR 點名</button>
+      <button class="tab" data-t="vio">違規紀錄</button>
+    </div>
+
+    <section id="p-book">
+      <div class="card">
+        <h3>① 選擇日期</h3>
+        <div class="chips" id="dates"></div>
+      </div>
+      <div class="card">
+        <h3>② 選擇時段</h3>
+        <div id="slotNote" class="mut hide"></div>
+        <div class="chips" id="slots"><span class="mut">請先選擇日期</span></div>
+      </div>
+      <div class="card">
+        <h3>③ 選擇座位 <span class="mut" id="mapHint"></span></h3>
+        <div id="floors"></div>
+        <div class="row"><div id="legend" class="grow"></div>
+          <span id="zoomBtns" class="hide"><button class="btn sm" id="zM">－</button> <button class="btn sm" id="zP">＋</button> <button class="btn sm" id="zF">符合寬度</button></span></div>
+        <div id="map"><div class="mut">請先選擇時段</div></div>
+      </div>
+    </section>
+
+    <section id="p-mine" class="hide">
+      <div class="row" style="margin-bottom:10px">
+        <button class="chip on" id="fUp">今日與未來</button>
+        <button class="chip" id="fAll">全部紀錄</button>
+        <span class="grow"></span>
+        <button class="btn sm" id="mineReload">重新整理</button>
+      </div>
+      <div class="mut" style="margin-bottom:8px">QR Code 只能在預約時段前後 <span id="qrw">60</span> 分鐘內產生；請出示給點名站掃描，勿截圖轉傳。</div>
+      <div id="mineList"><div class="spin">載入中…</div></div>
+    </section>
+
+    <section id="p-vio" class="hide">
+      <div class="card" id="vioSum"></div>
+      <div class="card tbl-wrap"><table class="table"><thead><tr><th>日期</th><th>時段</th><th>類型</th><th>備註</th></tr></thead><tbody id="vioBody"></tbody></table></div>
+    </section>
+  </div>
+</div>
+
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+/* 與 Apps Script 內嵌版（Common.html）相同的小工具；其餘共用函式在 common.js */
+function addD(ds, n) {
+  const d = new Date(ds + 'T12:00:00'); d.setDate(d.getDate() + n);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function setTabs(onChange) {
+  $$('.tab').forEach(b => b.onclick = () => {
+    $$('.tab').forEach(x => x.classList.toggle('on', x === b));
+    $$('[id^=p-]').forEach(p => p.classList.toggle('hide', p.id !== 'p-' + b.dataset.t));
+    onChange && onChange(b.dataset.t);
+  });
+}
+$('#switchBtn').onclick = signOut;
+
+const S = { me: null, min: '', max: '', today: '', nextOpenAt: 0, off: 0, date: '', slot: null, slots: [], layout: null,
+  seats: {}, mine: null, sig: '', susp: null, tab: 'book', filter: 'up', openTimer: null, qrw: 60,
+  floor: '', autoFloor: true, zoom: null };
+
+init();
+
+async function init() {
+  try {
+    await initAuth();
+    const b = await api('studentBootstrap');
+    if (b.error) return fatal(b.error);
+    $('#room').textContent = b.room; document.title = b.room;
+    Object.assign(S, { me: b.me, min: b.min, max: b.max, today: b.today, nextOpenAt: b.nextOpenAt, susp: b.suspendedUntil, qrw: b.qrWindow });
+    S.off = b.serverNow - Date.now();
+    $('#who').textContent = b.me.staff ? '教職員　' + b.me.no + ' ' + b.me.name : b.me.cls + ' 班 ' + b.me.no + ' 號　' + b.me.name;
+    $('#qrw').textContent = b.qrWindow;
+    $('#main').classList.remove('hide');
+    if (b.suspendedUntil) {
+      const el = $('#suspBanner'); el.classList.remove('hide');
+      el.innerHTML = '⛔ 因違規累計超過上限，<b>預約功能暫停至 ' + esc(b.suspendedUntil) + '</b>。期間只能於當天開放入場後，到現場由管理人員報到。';
+    }
+    setTabs(t => { S.tab = t; if (t === 'mine') loadMine(); if (t === 'vio') loadVio(); });
+    $('#fUp').onclick = () => { S.filter = 'up'; $('#fUp').classList.add('on'); $('#fAll').classList.remove('on'); loadMine(); };
+    $('#fAll').onclick = () => { S.filter = 'all'; $('#fAll').classList.add('on'); $('#fUp').classList.remove('on'); loadMine(); };
+    $('#mineReload').onclick = loadMine;
+    renderDates();
+    scheduleOpen(b.openText);
+    pollInit();
+  } catch (e) { fatal(errMsg(e)); }
+}
+
+function fatal(msg) {
+  const f = $('#fatal'); f.classList.remove('hide');
+  f.innerHTML = '<div></div><div style="margin-top:8px"><button class="btn sm" id="fatalSwitch">切換 Google 帳號</button></div>';
+  f.firstChild.textContent = msg;
+  $('#fatalSwitch').onclick = signOut;
+}
+
+/* ---------- 開放預約倒數 ---------- */
+function scheduleOpen(openText) {
+  const el = $('#openBanner');
+  const tick = () => {
+    const left = S.nextOpenAt - (Date.now() + S.off);
+    el.classList.remove('hide');
+    if (left > 0 && left < 3600000 * 24) {
+      const s = Math.floor(left / 1000), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), ss = s % 60;
+      el.innerHTML = '⏰ ' + esc(openText) + '，距離開放還有 <b>' + String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(ss).padStart(2, '0') + '</b>';
+    } else {
+      el.innerHTML = '📅 ' + esc(openText);
+    }
+  };
+  tick();
+  setInterval(tick, 1000);
+  // 開放時間一到自動刷新可預約日期；加隨機延遲，避免所有人同一瞬間打 API
+  const wait = S.nextOpenAt - (Date.now() + S.off);
+  if (wait > 0 && wait < 2147483000) {
+    setTimeout(async () => {
+      await sleep(Math.random() * 3000);
+      try {
+        const b = await api('studentBootstrap');
+        if (!b.error) { S.max = b.max; S.min = b.min; S.nextOpenAt = b.nextOpenAt; S.off = b.serverNow - Date.now(); renderDates(); toast('下週預約已開放！', 'ok'); scheduleOpenReset(openText); }
+      } catch (e) {}
+    }, wait + 200);
+  }
+}
+function scheduleOpenReset(t) { /* 下一次開放時間由 tick() 讀取 S.nextOpenAt，無需重設 */ }
+
+/* ---------- 預約流程 ---------- */
+function renderDates() {
+  const box = $('#dates'); box.innerHTML = '';
+  for (let d = S.min, n = 0; d <= S.max && n < 21; d = addD(d, 1), n++) {
+    const b = document.createElement('button');
+    b.className = 'chip' + (d === S.date ? ' on' : '');
+    b.innerHTML = esc(fmtDay(d)) + (d === S.today ? '<small>今天</small>' : '');
+    b.onclick = () => selectDate(d);
+    box.appendChild(b);
+  }
+}
+
+async function selectDate(d) {
+  S.date = d; S.slot = null; S.sig = ''; S.seats = {}; S.mine = null;
+  renderDates();
+  $('#map').innerHTML = '<div class="mut">請先選擇時段</div>'; $('#legend').innerHTML = '';
+  await loadSlots();
+}
+
+async function loadSlots() {
+  const d = S.date;
+  $('#slots').innerHTML = '<span class="mut">載入中…</span>';
+  try {
+    const r = await api('studentGetDay', d);
+    if (d !== S.date) return;
+    S.slots = r.slots;
+    const note = $('#slotNote');
+    note.classList.toggle('hide', !r.note); note.textContent = r.note || '';
+    const box = $('#slots'); box.innerHTML = '';
+    r.slots.forEach(s => {
+      const b = document.createElement('button');
+      b.className = 'chip' + (s.id === S.slot ? ' on' : '');
+      b.disabled = s.state === 'past';
+      b.innerHTML = esc(s.name) + ' ' + esc(s.start) + '–' + esc(s.end) +
+        '<small>' + (s.state === 'past' ? '已截止' : s.mine ? '✔ 已預約 ' + esc(s.mine) : '剩 ' + s.free + ' 位') + '</small>';
+      b.onclick = () => selectSlot(s.id);
+      box.appendChild(b);
+    });
+  } catch (e) { $('#slots').innerHTML = '<span class="mut">' + esc(errMsg(e)) + '</span>'; }
+}
+
+async function selectSlot(id) {
+  S.slot = id; S.sig = ''; S.autoFloor = true;
+  P.lastAct = Date.now(); pollStart(false);      // 重新選時段＝有操作，輪詢從頭計時
+  $$('#slots .chip').forEach((c, i) => c.classList.toggle('on', S.slots[i] && S.slots[i].id === id));
+  $('#map').innerHTML = '<div class="spin">載入座位表…</div>';
+  await loadSeats(true);
+}
+
+async function loadSeats(force) {
+  const d = S.date, sl = S.slot;
+  if (!sl) return;
+  try {
+    const r = await api('studentGetSeatMap', d, sl, !S.layout);
+    if (d !== S.date || sl !== S.slot) return;
+    if (r.layout) S.layout = r.layout;
+    const sig = JSON.stringify(r.seats) + '|' + r.mine;
+    if (force || sig !== S.sig) { S.sig = sig; S.seats = r.seats; S.mine = r.mine; drawMap(); }
+  } catch (e) { if (force) $('#map').innerHTML = '<div class="mut">' + esc(errMsg(e)) + '</div>'; }
+}
+
+function floorFree(f) {
+  let n = 0;
+  S.layout.items.forEach(i => { if (i.type === 'seat' && i.active && SeatMap.floorOf(i) === f && !S.seats[i.id]) n++; });
+  return '剩 ' + n + ' 位';
+}
+
+function drawMap() {
+  if (!S.layout) return;
+  const fls = SeatMap.floorsOf(S.layout);
+  if (S.autoFloor && S.mine) {                      // 剛選好時段時，自動切到「我預約的那一層」
+    const it = S.layout.items.find(i => i.id === S.mine);
+    if (it) S.floor = SeatMap.floorOf(it);
+    S.autoFloor = false;
+  }
+  if (!fls.includes(S.floor)) S.floor = fls[0];
+  SeatMap.floorTabs($('#floors'), S.layout, S.floor, f => { S.floor = f; S.autoFloor = false; drawMap(); }, floorFree);
+  $('#legend').innerHTML = SeatMap.legend('student');
+  $('#zoomBtns').classList.remove('hide');
+  updateHint();
+  const m = $('#map');
+  if (S.zoom == null && m.clientWidth < 700) S.zoom = 0.5;   // 手機預設放大一點，座位才點得到（可用 ＋／－ 調整）
+  SeatMap.render(m, S.layout, { mode: 'student', floor: S.floor, seats: S.seats, scale: S.zoom || undefined, onClick: onSeat });
+}
+function zoomBase() { return S.zoom || Math.max(0.3, Math.min(1, ($('#map').clientWidth - 4) / S.layout.w)); }
+$('#zP').onclick = () => { if (!S.layout) return; S.zoom = Math.min(1.5, +(zoomBase() + 0.1).toFixed(2)); drawMap(); };
+$('#zM').onclick = () => { if (!S.layout) return; S.zoom = Math.max(0.25, +(zoomBase() - 0.1).toFixed(2)); drawMap(); };
+$('#zF').onclick = () => { S.zoom = false; drawMap(); };
+
+function updateHint() {
+  $('#mapHint').textContent = P.stopped ? '（久未操作，已暫停自動更新；點一下畫面即可更新）'
+    : S.mine ? '（你已預約此時段）' : '（點選綠色座位）';
+}
+
+/* ---------- 座位表輪詢 ----------
+ * 每 30 秒更新一次；最後一次操作（點擊／觸碰／捲動／按鍵）超過 3 分鐘就停止；
+ * 再次操作時立即更新並重新開始 30 秒循環；頁面在背景時暫停。
+ * 只用「一個」setTimeout：下一次在「上一次請求完成後」才排程 → 不會重複計時器、不會請求重疊。 */
+const POLL_MS = 30000, IDLE_MS = 180000;
+const P = { timer: null, lastAct: Date.now(), inflight: false, stopped: false };
+
+function pollSchedule() {
+  clearTimeout(P.timer);
+  P.timer = setTimeout(pollTick, POLL_MS);
+}
+function pollStart(immediate) {
+  clearTimeout(P.timer); P.timer = null;
+  const was = P.stopped;
+  P.stopped = false;
+  if (was) updateHint();
+  if (immediate) pollOnce();
+  pollSchedule();
+}
+function pollStop() {
+  clearTimeout(P.timer); P.timer = null;
+  P.stopped = true;
+  updateHint();
+}
+async function pollTick() {
+  P.timer = null;
+  if (Date.now() - P.lastAct > IDLE_MS) { pollStop(); return; }
+  if (document.hidden) return;                 // 背景：不排程，回到前景時再啟動
+  await pollOnce();
+  pollSchedule();
+}
+async function pollOnce() {
+  if (P.inflight || S.tab !== 'book' || !S.slot || document.querySelector('.ov')) return;
+  P.inflight = true;
+  try { await loadSeats(false); } finally { P.inflight = false; }
+}
+function onUserActivity() {
+  P.lastAct = Date.now();
+  if (P.stopped && !document.hidden) pollStart(true);
+}
+function pollInit() {
+  ['pointerdown', 'click', 'touchstart', 'keydown', 'wheel', 'scroll'].forEach(ev =>
+    document.addEventListener(ev, onUserActivity, { passive: true, capture: true }));   // scroll 不冒泡，用 capture 才收得到
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { clearTimeout(P.timer); P.timer = null; return; }
+    if (Date.now() - P.lastAct > IDLE_MS) pollStop(); else pollStart(true);
+  });
+  pollSchedule();
+}
+
+function onSeat(it) {
+  if (!it.active) return;
+  const st = S.seats[it.id];
+  if (st === 'm') return toast('這是你已預約的座位');
+  if (st) return toast('這個座位已經被預約了', 'warn');
+  if (S.susp) return toast('預約功能暫停至 ' + S.susp, 'bad');
+  if (S.mine) return toast('這個時段你已經預約了，如要更換請先到「我的預約」取消', 'warn');
+  const slot = S.slots.find(s => s.id === S.slot);
+  modal({
+    title: '確認預約',
+    body: '<div style="line-height:1.9">日期：<b>' + esc(fmtDay(S.date)) + '</b><br>時段：<b>' + esc(slot.name) + ' ' + esc(slot.start) + '–' + esc(slot.end) + '</b><br>座位：<b style="font-size:20px">' + esc(it.label) + '</b></div>',
+    buttons: [{ text: '取消' }, { text: '確認預約', cls: 'pri', onClick: () => doReserve(it) }]
+  });
+}
+
+async function doReserve(it) {
+  let res = null;
+  for (let i = 0; i < 4; i++) {
+    try { res = await api('studentReserve', S.date, S.slot, it.id); } catch (e) { toast(errMsg(e), 'bad'); return true; }
+    if (res.code !== 'BUSY') break;
+    await sleep(600 + Math.random() * 900);           // 伺服器忙碌：自動重試
+  }
+  if (res.seats) { S.seats = res.seats; S.mine = Object.keys(res.seats).find(k => res.seats[k] === 'm') || null; S.sig = JSON.stringify(res.seats) + '|' + S.mine; drawMap(); }
+  if (res.ok) {
+    toast('預約成功：' + res.seatLabel, 'ok');
+    loadSlots();
+  } else if (res.code === 'TAKEN') {
+    setTimeout(() => modal({ title: '座位已被登記', body: '<p>' + esc(res.message) + '</p><p class="mut">座位表已更新為最新狀態，請重新選擇。</p>', buttons: [{ text: '重新選位', cls: 'pri' }] }), 50);
+    loadSlots();
+  } else {
+    toast(res.message || '預約失敗', 'bad');
+  }
+  return true;
+}
+
+/* ---------- 我的預約 / QR ---------- */
+async function loadMine() {
+  const box = $('#mineList');
+  box.innerHTML = '<div class="spin">載入中…</div>';
+  try {
+    const r = await api('studentMyReservations');
+    let list = r.list;
+    if (S.filter === 'up') list = list.filter(x => x.date >= r.today);
+    if (!list.length) { box.innerHTML = '<div class="card mut">沒有紀錄</div>'; return; }
+    box.innerHTML = '';
+    list.forEach(x => {
+      const c = document.createElement('div'); c.className = 'card';
+      c.innerHTML = '<div class="res-h"><b>' + esc(fmtDay(x.date)) + '　' + esc(x.slotName) + ' ' + esc(x.start) + '–' + esc(x.end) + '</b><span class="badge ' + esc(x.status) + '">' + esc(x.status) + '</span></div>' +
+        '<div>座位 <b>' + esc(x.seat) + '</b> <span class="mut">· ' + esc(x.source) + '</span></div><div class="res-a"></div>';
+      const a = $('.res-a', c);
+      if (x.qr) {
+        [['I', '📲 報到 / 回位 QR', 'pri'], ['T', '🚶 暫離 QR', ''], ['L', '👋 離場 QR', '']].forEach(([t, txt, cls]) => {
+          const b = document.createElement('button'); b.className = 'btn sm ' + cls; b.textContent = txt;
+          b.onclick = () => openQr(x, t, txt); a.appendChild(b);
+        });
+      }
+      if (x.canCancel) {
+        const b = document.createElement('button'); b.className = 'btn sm bad'; b.textContent = '取消預約';
+        b.onclick = () => cancelRes(x); a.appendChild(b);
+      }
+      if (!a.children.length) a.remove();
+      box.appendChild(c);
+    });
+  } catch (e) { box.innerHTML = '<div class="card mut">' + esc(errMsg(e)) + '</div>'; }
+}
+
+function cancelRes(x) {
+  modal({
+    title: '取消預約', body: esc(fmtDay(x.date)) + ' ' + esc(x.slotName) + ' 座位 ' + esc(x.seat) + '，確定取消？',
+    buttons: [{ text: '保留' }, { text: '確定取消', cls: 'bad', onClick: async () => {
+      try { const r = await api('studentCancel', x.resId); toast(r.ok ? '已取消' : r.message, r.ok ? 'ok' : 'bad'); loadMine(); if (S.date === x.date) loadSlots(); } catch (e) { toast(errMsg(e), 'bad'); }
+    } }]
+  });
+}
+
+function openQr(x, type, title) {
+  let timer = null, bar = null, closed = false;
+  const body = document.createElement('div');
+  body.innerHTML = '<div id="qrInfo" class="mut" style="text-align:center;margin-bottom:6px"></div><div class="qrbox" id="qrbox"><span class="mut">產生中…</span></div><div class="bar"><i id="qrbar"></i></div><div class="mut" style="text-align:center;margin-top:8px">QR 會自動更新，請直接出示螢幕給掃描機（請調高亮度）</div>';
+  const m = modal({ title: title, body: body, onClose: () => { closed = true; clearInterval(timer); loadMine(); }, buttons: [{ text: '關閉' }] });
+  async function refresh() {
+    try {
+      const r = await api('studentQr', x.resId, type);
+      if (closed) return;
+      const box = $('#qrbox', body);
+      if (!r.ok) { box.innerHTML = '<div style="padding:16px;text-align:center">' + esc(r.message) + '</div>'; clearInterval(timer); $('#qrbar', body).style.width = '0'; return; }
+      $('#qrInfo', body).textContent = r.who + ' · 座位 ' + r.seat + ' · 目前：' + r.status;
+      box.innerHTML = '';
+      new QRCode(box, { text: r.token, width: 250, height: 250, correctLevel: QRCode.CorrectLevel.M });
+      const ttl = r.ttl * 1000, t0 = Date.now(), bar = $('#qrbar', body);
+      bar.style.transition = 'none'; bar.style.width = '100%';
+      requestAnimationFrame(() => { bar.style.transition = 'width ' + (ttl * 0.45 / 1000) + 's linear'; bar.style.width = '0%'; });
+      clearInterval(timer);
+      timer = setInterval(refresh, ttl * 0.45);     // 在過期前自動換新 QR
+    } catch (e) { if (!closed) $('#qrbox', body).innerHTML = '<div style="padding:16px">' + esc(errMsg(e)) + '</div>'; }
+  }
+  refresh();
+}
+
+/* ---------- 違規紀錄 ---------- */
+async function loadVio() {
+  try {
+    const r = await api('studentMyViolations');
+    $('#vioSum').innerHTML = '目前累計違規：<b style="font-size:20px">' + r.unconsumed + '</b> 次（超過 ' + r.limit + ' 次將暫停預約一週）' +
+      (r.suspendedUntil ? '<div class="banner bad" style="margin:10px 0 0">預約功能暫停至 ' + esc(r.suspendedUntil) + '</div>' : '') +
+      '<div class="mut" style="margin-top:6px">違規項目：睡覺、玩手機、擅自離開座位、暫離超過半小時。</div>';
+    $('#vioBody').innerHTML = r.list.length ? r.list.map(v => '<tr><td>' + esc(v.date) + '</td><td>' + esc(v.slot) + '</td><td>' + esc(v.type) + '</td><td>' + esc(v.note) + '</td></tr>').join('') :
+      '<tr><td colspan="4" class="mut">沒有違規紀錄 👍</td></tr>';
+  } catch (e) { $('#vioSum').textContent = errMsg(e); }
+}
+</script>
+</body>
+</html>

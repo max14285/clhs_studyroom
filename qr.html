@@ -55,7 +55,7 @@ async function load(silent) {
   try {
     const r = await api('studentMyReservations');
     const list = r.list.filter(x => x.date === r.today && x.status !== '取消');
-    if (!list.length) { box.innerHTML = '<div class="card mut">今天沒有預約。（預約請到學校的預約系統頁面）</div>'; return; }
+    if (!list.length) { box.innerHTML = '<div class="card mut">今天沒有預約。<a href="reserve.html">前往預約座位</a></div>'; return; }
     box.innerHTML = '';
     list.forEach(x => {
       const c = document.createElement('div'); c.className = 'card';

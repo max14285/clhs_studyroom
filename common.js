@@ -111,8 +111,9 @@ function signOut() {
 
 /** 呼叫 Apps Script 函式（與 google.script.run 同名同參數）。登入過期會自動要求重新登入並重試一次 */
 async function api(fn, ...args) {
+  let authMsg = '';
   for (let attempt = 0; attempt < 2; attempt++) {
-    if (!tokenValid()) await needLogin(attempt ? '登入已過期，請重新登入' : '');
+    if (!tokenValid()) await needLogin(attempt ? (authMsg || '登入已過期，請重新登入') : '');
     const r = await fetch(window.APP_CONFIG.API_URL, {
       method: 'POST', redirect: 'follow',
       signal: (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(45000) : undefined,   // 伺服器卡住時 45 秒後放棄，交給暫存佇列重試
@@ -122,7 +123,13 @@ async function api(fn, ...args) {
     let j;
     try { j = await r.json(); } catch (e) { throw new Error('伺服器回應格式錯誤（請確認 API_URL 是 /exec 網址，且部署為「任何人」可存取）'); }
     if (j.ok) return j.result;
-    if (j.code === 'AUTH' && attempt === 0) { Auth.token = ''; Auth.exp = 0; continue; }
+    if (j.code === 'AUTH' && attempt === 0) {
+      authMsg = j.error || '';
+      Auth.token = ''; Auth.exp = 0;
+      try { sessionStorage.removeItem('sr_idt'); } catch (e) {}
+      try { google.accounts.id.disableAutoSelect(); } catch (e) {}      // 不要又自動選回同一個（錯誤的）帳號
+      continue;
+    }
     const e = new Error(j.error || '發生錯誤'); e.code = j.code; throw e;
   }
 }
